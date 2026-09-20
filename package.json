@@ -1,0 +1,13 @@
+{
+  "name": "@live-codes/browser-clojurescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client-side ClojureScript playground: runs ClojureScript in the browser with no server, via Scittle (SCI) and the self-hosted ClojureScript compiler.",
+  "license": "MIT",
+  "scripts": {
+    "start": "node serve.js 8127 public",
+    "build:cljs-selfhost": "node scripts/build-selfhost.js",
+    "check": "node --check serve.js && node --check public/main.js && node --check scripts/build-selfhost.js"
+  }
+}

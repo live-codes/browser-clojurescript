@@ -1,0 +1,16 @@
+goog.require;
+var process;
+process.hrtime;
+Object.lineNumber;
+Object.description;
+Object.number;
+Object.name;
+Object.fileName;
+Object.columnNumber;
+Object.out;
+Object.out.println;
+Object.stack;
+Object.error;
+Object.error.println;
+var require;
+require.resolve;
