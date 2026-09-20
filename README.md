@@ -31,12 +31,13 @@ editor. Program output appears in the output pane; the value of the last form is
 A static server is required, because `file://` cannot run modules or fetch the compiler — but it
 needs no special headers.
 
-## The self-hosted compiler has to be built
+## The self-hosted compiler
 
-The 8 MB self-hosted bundle is not committed. Build it once:
+The 8.1 MB self-hosted bundle is committed, so a clone runs as-is. Rebuilding it against a different
+ClojureScript release needs only a JVM:
 
 ```bash
-npm run build:cljs-selfhost        # needs a JVM and nothing else; ~1 minute
+npm run build:cljs-selfhost        # ~1 minute
 ```
 
 That downloads the standalone `cljs.jar` from the ClojureScript release (it carries Clojure, the
@@ -54,18 +55,19 @@ there, are in [FINDINGS.md](FINDINGS.md) §4.
 - **Client-side compilation and execution.** Nothing is uploaded; the interpreter or the compiler
   and your program all run in the tab.
 - **Real ClojureScript.** `cljs.core` data structures and seq functions, destructuring, threading
-  macros, `defn`/`defmacro`, atoms and watches, and `js/` interop.
+  macros, `defn`, atoms and watches, and `js/` interop.
 - **Two engines, one page** — an interpreter that loads in a moment, and the genuine compiler, at
   6–30 ms per run once loaded.
-- **Errors as diagnostics.** Under Scittle, a formatted report with message, data, source location
-  and stack trace.
+- **Errors as diagnostics.** Scittle prints a formatted report with message, data, source location
+  and stack trace; the self-hosted engine reports the thrown message.
 - **Lazy loading.** The page itself is ~20 KB; the engine is fetched on the first Run.
 
 ## Limitations
 
-- **The self-hosted engine mis-expands locally-defined macros** — `(unless true …)` runs its body —
-  and **does not surface runtime errors** from user code; the error example produces no output
-  under it. Scittle gets both right. See [FINDINGS.md](FINDINGS.md) §6.
+- **The self-hosted engine cannot expand a macro defined at runtime** — `(unless true …)` runs its
+  body. It is told the truth rather than left to guess: the page reports the limitation whenever it
+  sees a `defmacro`. Scittle expands the same code correctly.
+  See [FINDINGS.md](FINDINGS.md) §6.
 - **8.1 MB for the self-hosted engine.** It works on a laptop; it is not small. Scittle is the
   small option at 944 KB.
 - **No `:require` of anything not in the bundle.** The self-hosted engine's load function returns
@@ -104,8 +106,9 @@ element ids as globals, so scripted checks can read state without string literal
 ## Status
 
 Spike complete. Both engines run ClojureScript client-side, verified end to end in headless Chrome.
-Next: host the self-hosted bundle in `browser-compilers`, fix the two engine-2 gaps in §6 of
-FINDINGS.md, and add the language(s) to LiveCodes.
+Runtime errors and run values now come through correctly on both. Next: host the self-hosted bundle
+in `browser-compilers`, resolve the runtime-macro gap (§6 of FINDINGS.md), and add the language(s) to
+LiveCodes.
 
 ## License
 

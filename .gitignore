@@ -1,5 +1,5 @@
 node_modules/
-# target/
+target/
 .cache/
 
 # Produced by `npm run build:cljs-selfhost`; several megabytes, so it is fetched

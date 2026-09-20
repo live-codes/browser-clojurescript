@@ -260,6 +260,15 @@ function missingBundle(location) {
   );
 }
 
+/** Call something that may not accept this value, falling back if it does not. */
+function attempt(fn, fallback) {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
 async function ensureSelfHosted() {
   if (selfHosted) return selfHosted;
 
@@ -277,11 +286,33 @@ async function ensureSelfHosted() {
 
   const js = globalThis.cljs?.js;
   const core = globalThis.cljs?.core;
-  if (!js?.eval_str || !core?.array_map) throw missingBundle(cljsBundle.url);
+  const reader = globalThis.cljs?.tools?.reader;
+  const readerTypes = reader?.reader_types;
+  if (
+    !js?.eval ||
+    !js?.eval_str ||
+    !js?.read ||
+    !core?.array_map ||
+    !readerTypes?.indexing_push_back_reader
+  ) {
+    throw missingBundle(cljsBundle.url);
+  }
+
+  // `eval-str` installs these for its own reader (see `eval-str*` in cljs/js.cljs).
+  // Reading forms here needs the same environment, or `#js` has no reader function.
+  reader._STAR_data_readers_STAR_ = globalThis.cljs.tagged_literals._STAR_cljs_data_readers_STAR_;
+  // cljs.js' own `resolve-symbol` calls `cljs.analyzer/resolve-symbol`, which
+  // reads the ambient compiler environment — bound only while an eval is in
+  // flight, so it throws "IDeref … for type null" if used to read here. Passing
+  // the symbol through leaves qualification to the analyzer, which resolves it in
+  // the namespace the form is evaluated in. The compiler's own reads are
+  // unaffected: `eval-str*` binds this var, and a binding beats the root value.
+  reader.resolve_symbol = (symbol) => symbol;
 
   selfHosted = {
     js,
     core,
+    readerTypes,
     // One compiler state for the life of the page. `empty-state` carries the
     // whole cljs.core analysis cache, so rebuilding it per run would be both
     // wasteful and a behaviour change: definitions accumulate across runs, the
@@ -308,11 +339,32 @@ function ensureGlobalNamespace(path) {
   }
 }
 
+/** Is this form a `(defmacro …)`? Head position only, which is all a reader gives us. */
+function definesMacro(core, form) {
+  try {
+    return core.name(core.first(form)) === 'defmacro';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * cljs.js reports a wrapper whose message is just "ERROR" — the exception the
+ * program actually threw is at the end of its cause chain.
+ */
+function describeError(error) {
+  let message = null;
+  for (let current = error; current; current = current.cause) {
+    if (current.message) message = String(current.message);
+  }
+  return message ?? String(error);
+}
+
 async function runSelfHosted(code, io) {
-  const { js, core, state } = await ensureSelfHosted();
+  const { js, core, readerTypes, state } = await ensureSelfHosted();
   const captured = captureConsole(io);
 
-  // The namespace `eval-str` evaluates into when none is given (`cljs.user`).
+  // The namespace `eval` evaluates into when none is given (`cljs.user`).
   ensureGlobalNamespace('cljs.user');
 
   // cljs.js guards its options with `(defn- valid-opts? [x] (or (nil? x) (map? x)))`,
@@ -327,19 +379,59 @@ async function runSelfHosted(code, io) {
     (request, callback) => callback({ lang: 'js', source: '', success: false }),
   );
 
+  // Results are ClojureScript maps, so their keys have to be read with keyword
+  // lookup: `result.error` is always undefined, which is how every runtime error
+  // from user code used to be dropped on the floor, and why a run's value never
+  // reached the output pane either.
+  const errorOf = (result) => core.get(result, keyword('error'));
+  const valueOf = (result) => core.get(result, keyword('value'));
+  const evalForm = (form) => new Promise((resolve) => js.eval(state, form, opts, resolve));
+
   try {
-    await new Promise((resolve) => {
-      js.eval_str(state, code, 'main', opts, (result) => {
-        if (result.error) {
-          const { error } = result;
-          io.diagnostic(`${error?.message ?? error}\n`);
-          io.failed = true;
-        } else {
-          io.result(result.value);
-        }
-        resolve();
-      });
-    });
+    // One form at a time, the way a REPL does it — and here that is not a
+    // preference. `eval-str` analyzes every form in a string before evaluating
+    // any of them, so a `defmacro` cannot affect the forms that follow it:
+    // batched, the macro compiles as an ordinary function call, its body is
+    // evaluated as an argument, and it runs unconditionally whatever the test.
+    const reader = readerTypes.indexing_push_back_reader(code);
+    const eof = {};
+    let value;
+    let notedMacroLimitation = false;
+
+    for (;;) {
+      const form = js.read(eof, reader);
+      if (form === eof) break;
+
+      // Reported rather than silently wrong. A runtime `defmacro` is compiled as an
+      // ordinary function call here, so the macro body is evaluated as an argument
+      // and runs whatever the test says. See FINDINGS.md §6 for how far this was
+      // chased: re-interning the namespace does populate the analyzer's macro map,
+      // and expansion still does not happen.
+      if (!notedMacroLimitation && definesMacro(core, form)) {
+        notedMacroLimitation = true;
+        io.diagnostic(
+          'note: this engine cannot use a macro defined at runtime. `defmacro` compiles to an\n' +
+            'ordinary function call, so the macro body is evaluated as an argument and runs\n' +
+            'whatever the test says. The Scittle engine runs the same code correctly;\n' +
+            'see FINDINGS.md §6.\n',
+        );
+      }
+
+      const result = await evalForm(form);
+      const error = errorOf(result);
+      if (error) {
+        io.diagnostic(`${describeError(error)}\n`);
+        io.failed = true;
+        return;
+      }
+      value = valueOf(result);
+    }
+
+    // Printed with Clojure's printer, so a map comes out as `{:a 1}` rather than
+    // `#object[Object …]`, and `nil` is left out the way Scittle leaves it out.
+    if (value !== null && value !== undefined) {
+      io.result(attempt(() => core.pr_str(value), String(value)));
+    }
   } catch (error) {
     if (!captured.sawError) io.diagnostic(`${error?.message ?? error}\n`);
     io.failed = true;
@@ -370,9 +462,12 @@ function captureConsole(io) {
     return line.endsWith('\n') || line === '' ? `${line}` : `${line}\n`;
   };
 
-  console.log = console.info = (...args) => captured.sawError
-    ? undefined
-    : io.stdout(toText(args));
+  // Program output always goes to the output pane. Only warnings and errors are
+  // recorded as diagnostics, and `sawError` purely means "the engine already said
+  // something", so the catch blocks below can avoid repeating it — it must not
+  // gate stdout, or a single analyzer warning (a shadowed name, say) swallows
+  // everything the program prints.
+  console.log = console.info = (...args) => io.stdout(toText(args));
   console.warn = console.error = (...args) => {
     captured.sawError = true;
     io.diagnostic(toText(args));

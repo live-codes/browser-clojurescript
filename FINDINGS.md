@@ -43,10 +43,10 @@ Every row was run through the page in headless Chrome; outputs are verbatim. Tim
 | Hello world | pass, 11 ms | pass, 147 ms (first run, incl. 8.1 MB fetch+parse) |
 | Data structures and seq functions | pass, 5 ms | pass, 19 ms |
 | Functions, threading, destructuring | pass, 4 ms | pass, 31 ms |
-| Macros | pass, 8 ms | **partly wrong** — see §6 |
+| Macros | pass, 8 ms | **not expanded — reported in the page**, see §6 |
 | State with atoms | pass, 5 ms | pass, 13 ms |
 | JavaScript interop | pass, 6 ms | pass, 6 ms |
-| An error | pass, 3 ms | **no output, error not surfaced** — see §6 |
+| An error | pass, 3 ms | pass, 4 ms — same message |
 
 Sample verbatim output (`Data structures`, both engines identical):
 
@@ -153,34 +153,80 @@ lazy loading is the whole point for a 8 MB compiler.
 | self-hosted `cljs.js` (`:simple`) | 8,463,638 |
 | the page itself (`index.html` + `main.js`) | ~20 KB |
 
-Both are fetched lazily on the first Run. The self-hosted bundle is not committed (see
-`.gitignore`); the build takes ~1 minute.
+Both are fetched lazily on the first Run. The self-hosted bundle and its build output are committed,
+so a clone runs as-is; `npm run build:cljs-selfhost` rebuilds it against a different ClojureScript
+release, and takes ~1 minute.
 
-## 6. Two things the self-hosted engine gets wrong
+## 6. The two gaps, and where they landed
 
-Both are reproducible, and both matter for a language implementation.
+### Runtime errors are not surfaced — fixed
 
-**Locally-defined macros mis-expand.** In the Macros example, `(unless false …)` works but
-`(unless true …)` **runs its body anyway** — the guard is ignored. An earlier version of the example
-had a macro used in a nested position, and `(time-it (reduce + (range 100000)))` printed its own
-unevaluated expansion instead of a number:
+The symptom was that the error example produced *no output at all* under the self-hosted engine, not
+even the `println` that preceded the throw, and the status was reported `done`.
 
+The cause was not in the compiler. `eval-str` hands its callback a **ClojureScript map**, and the
+driver was reading it with JavaScript property access:
+
+```js
+if (result.error)              // undefined — always
+else io.result(result.value)   // undefined — always
 ```
-sum: (cljs.core/let [start__2__auto__ (cljs.core/system-time) value__3__auto__ nil] …)
+
+So every `:error` was discarded, and no value ever reached the output pane either. Reading the keys
+with keyword lookup — `core.get(result, core.keyword(null, 'error'))` — fixes both. The compiler does
+report the failure; it simply was not being read. The message needed one more step: cljs.js wraps the
+program's exception in one whose message is literally `ERROR`, with the original at the end of its
+`cause` chain, so the driver walks that chain and reports `cannot divide by zero`.
+
+The same bug is why no engine-2 row above ever showed a `=>` value line. Values are now printed with
+`cljs.core/pr-str`, so a map reads `{:names ["Ada" …], :count 3}` rather than `#object[Object …]`.
+
+A third driver bug only became visible once those two were fixed: the console capture silenced
+**stdout as soon as any warning appeared**, and the analyzer emits a shadowing warning before the
+program even runs — so the `this far` that the program prints before throwing never appeared.
+Warnings now record a diagnostic without gating the program's output, and the error example produces
+exactly what Scittle produces: `this far` on stdout, `cannot divide by zero` on stderr.
+
+### A macro defined at runtime is not expanded — not fixed, and now reported
+
+`(unless true (println …))` runs its body. The macro is never expanded, and the emitted JavaScript
+shows what happened instead:
+
+```js
+cljs.user.unless.call(null,true,cljs.core.println.call(null,"C: body of (unless true) …"));
 ```
 
-Scittle gets all of this right, in the same example, in the same page. So this is a property of
-locally-defined macros under self-hosted `eval-str` in this build, not of the source.
+It compiles as an **ordinary function call**, so the body is evaluated as an argument and runs
+whatever the test says. `unless false` appearing to work is a coincidence of that.
 
-**Runtime errors are not surfaced.** The error example produces *no output at all* under this
-engine — not even the `println` that precedes the throw — and the diagnostics pane shows only an
-analyzer warning about `divide` shadowing `cljs.core/divide`. The status is reported `done`. Shown
-by §4(d) that a throw during evaluation can abandon the rest of a run without reaching the
-callback, this is consistent with an exception escaping the `eval-str` continuation rather than
-arriving as `{:error …}` — but that last step is inference, not something verified here, and it is
-the first thing to chase next.
+The mechanism is in the analyzer. `cljs.analyzer/resolve-macro-var` resolves an unqualified symbol
+out of `<ns>$macros` in `:cljs` mode (analyzer.cljc:1490), and `<ns>$macros` is a namespace the
+*build* populates — that is how `cljs.core$macros` exists. Nothing populates it from a runtime
+`defmacro`.
 
-Neither limitation affects Scittle.
+This was chased a long way, and it is worth recording so nobody repeats it:
+
+1. **Reading forms with `cljs.js/read` needs `eval-str`'s reader environment.** Without it, `#js`
+   fails with "No reader function for tag js" and syntax-quote dies on "resolve-symbol is not
+   implemented". The fix is to install what `eval-str*` installs: `*data-readers*` from
+   `cljs.tagged_literals`, and a `resolve_symbol`. cljs.js' own `resolve-symbol` cannot be used — it
+   calls `cljs.analyzer/resolve-symbol`, which reads the ambient compiler environment and throws
+   `IDeref … for type null` when used outside an eval. A pass-through leaves qualification to the
+   analyzer, and the compiler's own reads are unaffected, because `eval-str*` *binds* that var.
+2. **`intern-macros` works.** Called while the compiler environment is bound — it has to ride on the
+   eval function, since that environment exists nowhere else — it recognises the macro
+   (`ns-interns*` reports `isMacro() === true`, off the emitted `cljs$lang$macro` flag) and it does
+   populate the analyzer's macro map. Verified directly: `:macros absent → present(unless)`.
+3. **And expansion still does not happen.** With `:macros` populated and `:defs` already holding
+   `unless`, the very next form still compiles as a call.
+
+So the gap sits one step further in than `intern-macros`: the macroexpansion path is not consulting
+what `resolve-macro-var` exposes. The remaining work is in the analyzer, not in the harness. Until
+then the page **says so** — a `defmacro` produces an explicit note in the diagnostics pane rather
+than silently wrong output — and the driver no longer carries the interning machinery, since it
+demonstrably does not achieve expansion.
+
+Scittle gets all of this right, in the same example, in the same page.
 
 ## 7. Recommendation for LiveCodes
 
