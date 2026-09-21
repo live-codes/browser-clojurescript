@@ -276,3 +276,46 @@ every table in this document was produced.
 ## 9. Licence
 
 Scittle, SCI and ClojureScript are all EPL-1.0. The page itself is MIT.
+
+## 10. The package (added after the spike)
+
+§7 above recommended a `scriptType` runtime. That is right for Scittle but wrong for the self-hosted
+compiler: `eval-str` runs the code where the *compiler* is, and a compiler belongs in the compiler
+worker. So the self-hosted half became a package,
+[`packages/cljs-selfhosted-compiler`](packages/cljs-selfhosted-compiler/README.md), which **compiles**
+instead of evaluating.
+
+```js
+const compiler = await CljsSelfHosted.createCljsCompiler({ baseUrl });  // classic worker, no DOM
+const { code, info } = await compiler.compile(cljsSource, options);     // JS for the result page
+```
+
+What that changes, and what it cost to build:
+
+- **The page needs its own cljs.core.** Compiled output is not linked against it — it calls into it —
+  so `dist/cljs-runtime.js` (1.5 MB) is loaded in the result page while `dist/cljs.js` (8.5 MB) stays
+  in the worker. Both must come from one `cljs.jar`, because the emitted calls are by munged name.
+- **No `scriptType`.** The output is ordinary JavaScript, so it is the result page's editor script and
+  has full DOM access. Scittle keeps its `scriptType`; Cherry is unaffected.
+- **The libraries are resolvable after all**, which §7 doubted. `clojure.string`, `clojure.set`,
+  `clojure.walk`, `clojure.edn` and `cljs.pprint` all compile and run, verified in the harness.
+- **Four more traps, all of which fail as something else.** The load-fn reply must be a ClojureScript
+  map with keyword values — `(assert (or (map? resource) (nil? resource)))` is checked inside cljs.js,
+  and a JS object literal is what you will reach for. Unresolvable must be `nil`, not an empty map.
+  `:eval` is required even when compiling, because a macros namespace has to be evaluated for its
+  macros to exist (`No *eval-fn* set`). And `goog.*` plus the compiler's own namespaces must be
+  reported as `{:lang :js}` — already loaded — or re-analysing them collides with themselves
+  (`Can't redefine a constant`).
+- The ClojureScript-vs-JavaScript mistake is worth naming: it bit **five separate times** in this
+  session — compile options, the load-fn request, the load-fn reply, the `compile-str` callback, and
+  `ex-data`. Every one was a JS object or property access where a CLJS map was required, and every one
+  failed silently or misleadingly. It is the single most likely thing to break when touching this
+  integration.
+
+Verified by `packages/cljs-selfhosted-compiler/test/` — a classic worker compiling, then the page
+running the output against the runtime only: **9 passed, 0 failed**, with the worker reporting
+`document=undefined window=undefined`.
+
+LiveCodes is wired (`cljs-selfhosted`, `cljs-scittle`, a `vendors.ts` pin and a build entry) and
+typechecks. It cannot run until the package is published, since `cljsSelfHostedBaseUrl` points at
+`@live-codes/cljs-selfhosted-compiler@0.1.0` on the CDN.

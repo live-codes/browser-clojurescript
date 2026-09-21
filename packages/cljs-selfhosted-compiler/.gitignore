@@ -1,0 +1,4 @@
+node_modules/
+target/
+.cache/
+test-report.txt

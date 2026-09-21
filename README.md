@@ -106,9 +106,12 @@ element ids as globals, so scripted checks can read state without string literal
 ## Status
 
 Spike complete. Both engines run ClojureScript client-side, verified end to end in headless Chrome.
-Runtime errors and run values now come through correctly on both. Next: host the self-hosted bundle
-in `browser-compilers`, resolve the runtime-macro gap (§6 of FINDINGS.md), and add the language(s) to
-LiveCodes.
+Runtime errors and run values now come through correctly on both.
+
+The self-hosted engine has since been packaged as
+[`packages/cljs-selfhosted-compiler`](packages/cljs-selfhosted-compiler/README.md), which compiles in
+a classic worker and returns JavaScript for the page to run — the shape LiveCodes needs, rather than
+the evaluate-in-the-page spike above. See [FINDINGS.md](FINDINGS.md) §10.
 
 ## License
 
