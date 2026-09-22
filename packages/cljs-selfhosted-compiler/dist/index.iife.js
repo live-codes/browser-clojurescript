@@ -146,13 +146,119 @@ async function createCljsCompiler({ baseUrl } = {}) {
     );
   };
 
+/** Is this form a `(defmacro …)`? Head position only, which is all a reader gives us. */
+function definesMacro(core, form) {
+  try {
+    return core.name(core.first(form)) === 'defmacro';
+  } catch {
+    return false;
+  }
+}
+
+/** Navigates `a.b.c` to the global object a namespace compiles into, creating it. */
+function namespaceObject(path) {
+  let target = globalThis;
+  for (const part of path.split('.')) {
+    if (!target[part]) target[part] = {};
+    target = target[part];
+  }
+  return target;
+}
+
+  /**
+   * Makes macros the user defined visible to the analyzer.
+   *
+   * Two things are needed, and neither is optional:
+   *
+   * 1. The macro *function* has to exist, which means evaluating the `defmacro`.
+   *    Compiling alone is not enough: `get-expander` returns a Var and reads
+   *    `.isMacro` off it. Evaluating user macros is the one place user code
+   *    legitimately runs at compile time, and it is what the JVM compiler does with a
+   *    macro namespace.
+   * 2. It has to be where dispatch looks. `get-expander*` (analyzer.cljc:4220)
+   *    resolves an unqualified symbol from exactly two places — the namespace named by
+   *    `:use-macros`, or `cljs.core$macros`. It never consults the current
+   *    namespace's own `$macros`, which is why filling that map (what `intern-macros`
+   *    does) changes nothing: that map is read by `resolve-macro-var`, and macro
+   *    dispatch does not go through it.
+   *
+   * The cost of using `cljs.core$macros` is that a user macro masquerading as a core
+   * macro shadows one of the same name. The tidier route — registering `:use-macros`
+   * plus a per-namespace `$macros` object — is untested.
+   *
+   * Returns the source to compile: the original when there are no macros, and
+   * otherwise the source with the `defmacro` forms removed. See the note at the end
+   * of the function for why they have to go.
+   */
+  async function exposeUserMacros(state, code, opts, nsName, notes) {
+    const reader = globalThis.cljs && globalThis.cljs.tools && globalThis.cljs.tools.reader;
+    const readerTypes = reader && reader.reader_types;
+    if (!readerTypes || !cljsJs.read || !cljsJs.eval) {
+      notes.push('macro pre-pass: reader or eval unavailable');
+      return code;
+    }
+
+    // Reading forms needs the environment eval-str installs for its own reader, and
+    // cljs.js' own resolve-symbol needs a compiler env that exists only inside an eval.
+    reader._STAR_data_readers_STAR_ = globalThis.cljs.tagged_literals._STAR_cljs_data_readers_STAR_;
+    reader.resolve_symbol = (symbol) => symbol;
+
+    // The namespace object has to exist BEFORE anything is evaluated, or the emitted
+    // `cljs.user.unless = …` throws "Cannot set properties of undefined" and the eval
+    // fails silently — the same trap as a top-level `def` at run time.
+    const source = namespaceObject(nsName);
+    const macroNs = namespaceObject('cljs.core$macros');
+
+    const stream = readerTypes.indexing_push_back_reader(code);
+    const eof = {};
+    const rest = [];
+    let found = false;
+    try {
+      for (;;) {
+        const form = cljsJs.read(eof, stream);
+        if (form === eof) break;
+        if (!definesMacro(core, form)) {
+          rest.push(String(core.pr_str(form)));
+          continue;
+        }
+        found = true;
+        const result = await new Promise((resolve) => cljsJs.eval(state, form, opts, resolve));
+        const error = core.get(result, keyword('error'));
+        if (error) notes.push(`macro eval failed: ${String(error.message || error)}`);
+      }
+    } catch (e) {
+      // Source that does not read is not our problem to report: leave it to
+      // compile-str, whose diagnostics are better than anything here.
+      return code;
+    }
+    if (!found) return code;
+
+    let copied = 0;
+    for (const key of Object.keys(source)) {
+      const value = source[key];
+      if (value && value.cljs$lang$macro === true) {
+        macroNs[key] = value;
+        copied++;
+      }
+    }
+    if (!copied) {
+      notes.push('macro pre-pass: no macro functions were produced, so nothing to expose');
+    }
+
+    // Compile the rest of the source WITHOUT the `defmacro` forms. Analysing a
+    // `defmacro` — which compiling it does — takes the name back out of macro
+    // dispatch, so the forms after it stop expanding. Nothing is lost by dropping it:
+    // macros are expanded away at compile time, and the output never calls them.
+    return rest.join('\n');
+  }
+
   /**
    * Compiles ClojureScript to JavaScript.
    *
    * `options` are plain JS and are translated to the ClojureScript map cljs.js
    * requires. Anything it does not recognise is ignored, as cljs.js ignores it.
    */
-  function compile(code, options = {}) {
+  async function compile(code, options = {}) {
     const optMap = {
       ns: 'cljs.user',
       context: null,
@@ -175,44 +281,53 @@ async function createCljsCompiler({ baseUrl } = {}) {
     if (optMap.sourceMap) pairs.push(keyword('source-map'), true);
     if (optMap.defEmitsVar) pairs.push(keyword('def-emits-var'), true);
 
-    return new Promise((resolve) => {
-      // The analyzer reports warnings through the console, and a worker's console
-      // goes nowhere — and in LiveCodes the console pane only watches the result
-      // page. So they are collected here and returned as `info.errors`, which is
-      // where LiveCodes looks for a compiler's diagnostics.
-      const errors = [];
-      const original = { warn: console.warn, error: console.error };
-      const collect = (...args) => {
-        const line = args.map(String).join(' ');
-        if (line.trim()) errors.push(line.trim());
-      };
-      console.warn = collect;
-      console.error = collect;
+    const opts = core.array_map.apply(null, pairs);
 
-      const finish = (result) => {
-        console.warn = original.warn;
-        console.error = original.error;
-        const error = core.get(result, keyword('error'));
-        const value = core.get(result, keyword('value'));
-        if (error) {
-          errors.push(String(error.message || error));
-        }
-        resolve({
-          code: value == null ? '' : String(value),
-          info: errors.length ? { errors } : {},
-        });
-      };
+    // The analyzer reports warnings through the console, and a worker's console goes
+    // nowhere — and in LiveCodes the console pane only watches the result page. So
+    // they are collected here and returned as `info.errors`, which is where LiveCodes
+    // looks for a compiler's diagnostics.
+    const errors = [];
+    const original = { warn: console.warn, error: console.error };
+    const collect = (...args) => {
+      const line = args.map(String).join(' ');
+      if (line.trim()) errors.push(line.trim());
+    };
+    console.warn = collect;
+    console.error = collect;
 
+    try {
+      // A fresh state per compile, so a run is not affected by a previous one's
+      // definitions — LiveCodes rebuilds the result page for each run.
+      const state = cljsJs.empty_state();
+      let toCompile = code;
+      const notes = [];
       try {
-        // A fresh state per compile, so a run is not affected by a previous one's
-        // definitions — LiveCodes rebuilds the result page for each run.
-        cljsJs.compile_str(cljsJs.empty_state(), code, 'main', core.array_map.apply(null, pairs), finish);
+        toCompile = await exposeUserMacros(state, code, opts, optMap.ns || 'cljs.user', notes);
       } catch (e) {
-        console.warn = original.warn;
-        console.error = original.error;
-        resolve({ code: '', info: { errors: [...errors, String((e && e.message) || e)] } });
+        // Losing macros is better than losing the compile — and saying so beats both.
+        errors.push(`macro handling failed: ${String((e && e.message) || e)}`);
       }
-    });
+      errors.push(...notes);
+
+      const result = await new Promise((resolve) => {
+        try {
+          cljsJs.compile_str(state, toCompile, 'main', opts, resolve);
+        } catch (e) {
+          errors.push(String((e && e.message) || e));
+          resolve(null);
+        }
+      });
+
+      if (!result) return { code: '', info: errors.length ? { errors } : {} };
+      const error = core.get(result, keyword('error'));
+      const value = core.get(result, keyword('value'));
+      if (error) errors.push(String(error.message || error));
+      return { code: value == null ? '' : String(value), info: errors.length ? { errors } : {} };
+    } finally {
+      console.warn = original.warn;
+      console.error = original.error;
+    }
   }
 
   return { compile };

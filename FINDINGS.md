@@ -187,7 +187,35 @@ program even runs — so the `this far` that the program prints before throwing 
 Warnings now record a diagnostic without gating the program's output, and the error example produces
 exactly what Scittle produces: `this far` on stdout, `cannot divide by zero` on stderr.
 
-### A macro defined at runtime is not expanded — not fixed, and now reported
+### A macro defined at runtime is not expanded — solved in the package
+
+`(unless true (println …))` ran its body. The macro was never expanded; here is what it took to fix,
+because the mechanism is genuinely counter-intuitive.
+
+Macro dispatch does **not** go through `resolve-macro-var`. It goes through `get-expander`, which
+returns a *Var* and reads `.isMacro` off it — and for an unqualified symbol it searches exactly two
+places (analyzer.cljc:4220): the namespace named by `:use-macros`, or **`cljs.core$macros`**. It never
+consults the current namespace's own `$macros`. That is why making `intern-macros` work — `:macros`
+went from absent to `present(unless)`, which I verified — changed nothing: that map is read by
+`resolve-macro-var`, and dispatch ignores it.
+
+Three things are needed, and missing any one of them looks like something else entirely:
+
+1. **The macro function must exist**, which means evaluating the `defmacro` — compiling it is not
+   enough. Inherent to macros: it is what the JVM compiler does with a macro namespace.
+2. **The namespace object must exist first.** `cljs.user.unless = …` throws `Cannot set properties of
+   undefined` if `cljs.user` is absent, and the eval then fails *silently* — the same trap as §4(d),
+   in the worker this time. It cost a round trip to see, and was only visible by reporting what the
+   pre-pass actually observed.
+3. **The `defmacro` forms must not be part of what gets compiled.** Re-analysing a `defmacro` — which
+   compiling it does — takes the name back out of macro dispatch, so forms after it stop expanding.
+   Evaluating them and compiling the *rest* is what makes it work; the definition is compile-time only,
+   so nothing is lost from the output.
+
+The package does all three, and the harness asserts it: `unless ran` prints and `SHOULD NOT PRINT`
+does not.
+
+Scittle gets this right natively, in the same example, in the same page.
 
 `(unless true (println …))` runs its body. The macro is never expanded, and the emitted JavaScript
 shows what happened instead:

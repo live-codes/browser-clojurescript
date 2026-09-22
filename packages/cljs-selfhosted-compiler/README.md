@@ -95,9 +95,10 @@ exist, without which compilation fails with `No *eval-fn* set`.
 
 ## Limitations
 
-- **A macro defined at runtime is not expanded.** `(defmacro …)` compiles as an ordinary function
-  call, so its body runs whatever the test. Self-hosted cljs resolves macros from a `<ns>$macros`
-  namespace that only the build populates. See `browser-clojurescript`'s `FINDINGS.md` §6.
+- **A `defmacro` named after a core macro shadows it**, because exposing user macros uses the one
+  lookup path the analyzer offers for unqualified symbols (`cljs.core$macros`; see below).
+- **A `defmacro` is evaluated at compile time**, so it runs in the worker. That is inherent to macros
+  — it is what the JVM compiler does — but it does mean a macro body cannot touch the page.
 - **No source maps**, so no clickable line numbers for diagnostics.
 - **Not a project build**: no `:advanced`, no `:npm-deps`, no foreign libraries.
 

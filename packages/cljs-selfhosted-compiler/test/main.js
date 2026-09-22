@@ -19,6 +19,14 @@ window.cljs.user = window.cljs.user || {};
 
 const CASES = [
   {
+    // First on purpose: if this passes here but failed when it ran after the other
+    // cases, the analyzer is caching something that the macro step needs to invalidate.
+    name: 'a macro defined at runtime is expanded',
+    code: '(defmacro unless [test & body]\n  `(when (not ~test) ~@body))\n(unless false (println "unless ran"))\n(unless true (println "SHOULD NOT PRINT"))',
+    expect: ['unless ran'],
+    absent: ['SHOULD NOT PRINT'],
+  },
+  {
     name: 'println and a top-level def',
     code: '(println "hello from compiled js")\n(def x 41)\n(println "x + 1 =" (inc x))',
     expect: ['hello from compiled js', 'x + 1 = 42'],
@@ -58,12 +66,6 @@ const CASES = [
     name: 'an unsupported require fails rather than hangs',
     code: "(require '[some.library.that.does.not.exist :as nope])\n(println :never)",
     expectError: true,
-  },
-  {
-    name: 'a defmacro (expected to misbehave — see FINDINGS)',
-    code: '(defmacro unless [test & body]\n  `(when (not ~test) ~@body))\n(unless true (println "SHOULD NOT PRINT"))',
-    expect: [],
-    note: 'recorded, not asserted',
   },
   {
     name: 'a deliberate compile error',
@@ -172,6 +174,7 @@ async function runHarness() {
       pass =
         Boolean(compiled.code) &&
         testCase.expect.every((needle) => all.includes(needle)) &&
+        (testCase.absent || []).every((needle) => !all.includes(needle)) &&
         !ran.error;
     }
 
