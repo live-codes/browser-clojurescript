@@ -101,6 +101,12 @@ exist, without which compilation fails with `No *eval-fn* set`.
 
 - **A `defmacro` is evaluated at compile time**, so it runs in the worker. That is inherent to macros
   — it is what the JVM compiler does — but it does mean a macro body cannot touch the page.
+- **Only top-level `defmacro` forms are recognised.** Exposing a macro means evaluating its
+  `defmacro` before the source that uses it is analysed, and the pre-pass that does this reads
+  top-level forms. A `defmacro` nested inside a `(do …)` is therefore compiled as an ordinary `def`
+  (which marks the var a macro at run time) and calls to it are never expanded.
+- **A macro is scoped to one compile.** Each compile gets a fresh compiler state, so a macro defined
+  in one run is not available in the next — a later run reports it as an undeclared Var.
 - **Not a project build**: no `:advanced`, no `:npm-deps`, no foreign libraries.
 
 ## Licence

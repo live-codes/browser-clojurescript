@@ -35,12 +35,145 @@ const CASES = [
     absent: ['SHOULD NOT PRINT'],
   },
   {
+    name: "a macro declared in the source's own namespace is expanded",
+    // The namespace case, which every other macro case here misses by staying in the
+    // implicit `cljs.user`. Macro dispatch consults `:use-macros` of the namespace the
+    // form is compiled *in*, so a macro registered on `cljs.user` while the source
+    // declares `(ns starter.core …)` is never found: it compiles as an undeclared Var
+    // and the emitted call throws at run time. Requiring clojure.string here also checks
+    // the declared namespace is used for the whole compile, not just macro registration.
+    code: "(ns starter.core (:require [clojure.string :as string]))\n(defmacro unless [test & body]\n  `(when-not ~test ~@body))\n(unless false (println \"namespace macro ran\"))\n(unless true (println \"SHOULD NOT PRINT\"))\n(println (string/upper-case \"declared\"))",
+    expect: ['namespace macro ran', 'DECLARED'],
+    absent: ['SHOULD NOT PRINT'],
+  },
+  {
     name: 'a macro named after a core macro leaves core macros alone',
     // Exposing user macros used to write into cljs.core$macros, replacing the core macro
     // of the same name. `when-let` expands through core macros, so it is the canary.
     code: '(defmacro when [test & body] :user-defined)\n(println (when-let [x 1] (inc x)))\n(println (->> [1 2] (map inc)))',
     expect: ['2', '(2 3)'],
     absent: [':user-defined'],
+  },
+  {
+    // A dash in the macro's name. The evaluated macro is a JavaScript property
+    // (`cljs.user.with_log`) while the analyzer's symbol is `with-log`, so exposing it
+    // turns on `demunge` recovering the symbol the dispatch map is keyed by. This is the
+    // cljs.user path; the declared-namespace path is the next case, because the two
+    // differ in which namespace's `:use-macros` is read.
+    name: 'a macro whose name contains a dash is expanded',
+    code: '(defmacro with-log [x & body]\n  `(do (println "start" ~x) ~@body (println "end")))\n(with-log 1 (println "mid"))',
+    expect: ['start 1', 'mid', 'end'],
+  },
+  {
+    // The same dash, in a source that declares its own namespace — so the name has to
+    // survive munging, demunging *and* being registered on a namespace other than
+    // cljs.user.
+    name: 'a dashed macro in a declared namespace is expanded',
+    code: '(ns starter.dash)\n(defmacro with-log [x & body]\n  `(do (println "start" ~x) ~@body (println "end")))\n(with-log 1 (println "mid"))',
+    expect: ['start 1', 'mid', 'end'],
+  },
+  {
+    // The same dash, but in the *namespace name* — the other half of the munge round-trip.
+    // The emitted JavaScript is `starter.my_app.with_log = …`, so the namespace object the
+    // pre-pass must create (and later scan) is the munged one; building it from the name as
+    // written created `starter['my-app']` instead, the macro eval threw "Cannot set
+    // properties of undefined", and every macro in the namespace silently went missing.
+    name: 'a macro in a namespace whose name contains a dash is expanded',
+    code: '(ns starter.my-app)\n(defmacro with-log [x & body]\n  `(do (println "start" ~x) ~@body (println "end")))\n(with-log 1 (println "mid"))',
+    expect: ['start 1', 'mid', 'end'],
+  },
+  {
+    // A macro whose body calls another user macro. Macro dispatch happens while the
+    // calling body is analysed, so the callee has to be a macro by then; exposing every
+    // macro only after the whole pre-pass had evaluated them left `inc1` as an ordinary
+    // call, which compiled to `(+ nil 1)` and printed 1. The fix publishes each macro as
+    // it is evaluated.
+    name: 'a macro body can call another user macro',
+    code: '(defmacro inc1 [x] `(+ ~x 1))\n(defmacro add3 [x] (inc1 (inc1 (inc1 x))))\n(println (add3 10))',
+    expect: ['13'],
+  },
+  {
+    // Several macros in one compile, one of which expands into the others.
+    name: 'several macros in one compile expand',
+    code: '(defmacro inc1 [x] `(+ ~x 1))\n(defmacro dbl [x] `(* ~x 2))\n(defmacro both [x] `(+ (inc1 ~x) (dbl ~x)))\n(println (inc1 1))\n(println (dbl 10))\n(println (both 5))',
+    expect: ['2', '20', '16'],
+  },
+  {
+    // A macro used away from top level: inside a fn body, inside a let, and nested
+    // inside another use of itself.
+    name: 'a macro used inside a fn, a let and another macro',
+    code: '(defmacro twice [x] `(+ ~x ~x))\n(defn f [n] (twice n))\n(println (f 21))\n(let [a 10] (println (twice a)))\n(println (twice (twice 1)))',
+    expect: ['42', '20', '4'],
+  },
+  {
+    // A macro that generates a top-level var. The expansion is analysed in place, so a
+    // `def`/`defn` inside it has to land as a top-level definition.
+    name: 'a macro that expands to a def and a defn',
+    code: '(defmacro defanswer [n v] `(def ~n ~v))\n(defanswer answer 42)\n(println answer)\n(defmacro defsq [n] `(defn ~n [x] (* x x)))\n(defsq sq)\n(println (sq 7))',
+    expect: ['42', '49'],
+  },
+  {
+    // &form is the whole call and &env is the analyzer env (not a locals map, as in
+    // Clojure — the lexical bindings live under its :locals key). Both are populated in
+    // self-hosted mode, so a macro may read either.
+    name: 'a macro may use &form and &env',
+    code: '(defmacro where [x] `(println "form:" ~(str &form)))\n(defmacro env-n [x] `(println "env-locals:" ~(count (:locals &env))))\n(where 1)\n(env-n 2)\n(let [a 1 b 2] (env-n 3))',
+    expect: ['form: (where 1)', 'env-locals: 0', 'env-locals: 2'],
+  },
+  {
+    // NOT a gap here: `defmacro` prepends &form/&env itself, so naming them in the
+    // argument vector adds two more parameters. The JVM rejects the same source with
+    // "Wrong number of args (3) passed to: user/plus1"; self-hosted instead produces
+    // `null + 1`, because JavaScript does not check arity. Recorded, not asserted —
+    // the source is invalid Clojure, so there is nothing for the wrapper to fix.
+    name: 'the invalid [&form &env x] argument vector',
+    note: true,
+    code: '(defmacro plus1 [&form &env x] `(+ ~x 1))\n(println (plus1 41))',
+  },
+  {
+    // A docstring, `^:private` metadata and multiple arities are all just parts of the
+    // `defmacro` form the pre-pass evaluates, so all three have to survive.
+    name: 'a macro with a docstring, metadata and several arities',
+    code: '(defmacro with-doc "Adds one." [x] `(+ ~x 1))\n(defmacro ^:private priv-m [x] `(* ~x 2))\n(defmacro ar ([x] `(+ ~x 1)) ([x y] `(+ ~x ~y 1)))\n(println (with-doc 1))\n(println (priv-m 3))\n(println (ar 1))\n(println (ar 1 2))',
+    expect: ['2', '6', '2', '4'],
+  },
+  {
+    // A macro that throws while expanding is a compile-time failure, so it has to become
+    // a diagnostic in info.errors and fail the compile — not hang the worker or take the
+    // page down with it.
+    name: 'a macro that throws at expansion time fails the compile',
+    code: '(defmacro boom [x] (throw (ex-info "kaboom" {})))\n(println (boom 1))',
+    expectError: true,
+  },
+  {
+    // Each compile gets a fresh compiler state, and the macro pre-pass runs per compile,
+    // so a macro from a previous run is simply not there. Recorded, not asserted: run 2
+    // reports an undeclared Var (`m`), which means the wrapper did not throw — the
+    // emitted call to `cljs.user.m` then fails in the page, as any undeclared call would.
+    // `runs` compiles each source in turn on the same worker, the way LiveCodes would.
+    name: 'a macro defined in one run is not available in the next',
+    note: true,
+    runs: [
+      '(defmacro m [x] `(+ ~x 1))\n(println (m 1))',
+      '(println (m 5))',
+    ],
+  },
+  {
+    // Auto-gensyms: the same `v#` repeated in one syntax-quote has to be one gensym
+    // (or the let would bind a name the body never sees), and it has to be distinct from
+    // any user local that happens to share the printed name.
+    name: 'syntax-quote auto-gensyms stay hygienic',
+    code: '(defmacro twice-g [x] `(let [v# ~x] (+ v# v#)))\n(defmacro add-one [x] `(let [v# 1] (+ v# ~x)))\n(println (twice-g 21))\n(let [v 10] (println (add-one v)))',
+    expect: ['42', '11'],
+  },
+  {
+    // The pre-pass recognises only top-level `defmacro` forms, so a nested one is compiled
+    // as an ordinary `def` (which marks the var a macro at run time) and the call to it is
+    // never expanded — it becomes a plain function call whose `&form` argument is the real
+    // argument. Recorded, not asserted; see the README's limitation note.
+    name: 'a defmacro nested inside (do ...) is not expanded',
+    note: true,
+    code: '(do (defmacro m [x] `(+ ~x 1)) (println (m 1)))',
   },
   {
     name: 'println and a top-level def',
@@ -175,10 +308,21 @@ async function runHarness() {
   const results = [];
 
   for (const testCase of CASES) {
-    const compiled = await ask({ code: testCase.code });
-    const warnings = compiled.warnings || [];
-    const ran = compiled.code ? runInPage(compiled.code) : { printed: [], error: null };
-    const all = [ran.printed.join('\n'), compiled.error, ran.error].filter(Boolean).join('\n');
+    // A case is normally one source. `runs` compiles several sources in turn on the same
+    // worker — separate compiles, so the second sees a fresh compiler state — which is the
+    // only way to observe that a definition from one run does not outlive it.
+    const sources = testCase.runs || [testCase.code];
+    const warnings = [];
+    const parts = [];
+    let compiled = null;
+    let ran = { printed: [], error: null };
+    for (const source of sources) {
+      compiled = await ask({ code: source });
+      warnings.push(...(compiled.warnings || []));
+      ran = compiled.code ? runInPage(compiled.code) : { printed: [], error: null };
+      parts.push(ran.printed.join('\n'), compiled.error, ran.error);
+    }
+    const all = parts.filter(Boolean).join('\n');
 
     let pass;
     if (testCase.expectError) {
