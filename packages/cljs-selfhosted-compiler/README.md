@@ -95,8 +95,6 @@ exist, without which compilation fails with `No *eval-fn* set`.
 
 ## Limitations
 
-- **A `defmacro` named after a core macro shadows it**, because exposing user macros uses the one
-  lookup path the analyzer offers for unqualified symbols (`cljs.core$macros`; see below).
 - **A `defmacro` is evaluated at compile time**, so it runs in the worker. That is inherent to macros
   — it is what the JVM compiler does — but it does mean a macro body cannot touch the page.
 - **No source maps**, so no clickable line numbers for diagnostics.

@@ -212,49 +212,22 @@ Three things are needed, and missing any one of them looks like something else e
    Evaluating them and compiling the *rest* is what makes it work; the definition is compile-time only,
    so nothing is lost from the output.
 
-The package does all three, and the harness asserts it: `unless ran` prints and `SHOULD NOT PRINT`
-does not.
+Two more things fell out of this, both found by reproducing the failure in Node rather than the
+browser — a cycle there is seconds instead of minutes:
+
+4. **Exposure has to go through `:use-macros`, not `cljs.core$macros`.** Writing user macros into
+   `cljs.core$macros` replaces the core macro of the same name, so a `(defmacro when …)` broke core
+   `when` for everything else compiled in that state. Pointing `:use-macros` at a per-namespace
+   `cljs.user$macros` object resolves user macros first and leaves core macros alone.
+5. **Re-evaluating a `defmacro` whose name is already exposed poisons the lookup for it.** Run 1
+   expanded; every later run in the same worker silently did not, while still reporting the macro as
+   present and copied. Withdrawing the exposed names before re-evaluating fixed it, and registering
+   through the per-compile state (4) removed the class of problem altogether.
+
+The package does all of this, and the harness asserts it — including a second run in the same worker,
+and a macro named after a core macro (`when-let` and `->>` must still behave).
 
 Scittle gets this right natively, in the same example, in the same page.
-
-`(unless true (println …))` runs its body. The macro is never expanded, and the emitted JavaScript
-shows what happened instead:
-
-```js
-cljs.user.unless.call(null,true,cljs.core.println.call(null,"C: body of (unless true) …"));
-```
-
-It compiles as an **ordinary function call**, so the body is evaluated as an argument and runs
-whatever the test says. `unless false` appearing to work is a coincidence of that.
-
-The mechanism is in the analyzer. `cljs.analyzer/resolve-macro-var` resolves an unqualified symbol
-out of `<ns>$macros` in `:cljs` mode (analyzer.cljc:1490), and `<ns>$macros` is a namespace the
-*build* populates — that is how `cljs.core$macros` exists. Nothing populates it from a runtime
-`defmacro`.
-
-This was chased a long way, and it is worth recording so nobody repeats it:
-
-1. **Reading forms with `cljs.js/read` needs `eval-str`'s reader environment.** Without it, `#js`
-   fails with "No reader function for tag js" and syntax-quote dies on "resolve-symbol is not
-   implemented". The fix is to install what `eval-str*` installs: `*data-readers*` from
-   `cljs.tagged_literals`, and a `resolve_symbol`. cljs.js' own `resolve-symbol` cannot be used — it
-   calls `cljs.analyzer/resolve-symbol`, which reads the ambient compiler environment and throws
-   `IDeref … for type null` when used outside an eval. A pass-through leaves qualification to the
-   analyzer, and the compiler's own reads are unaffected, because `eval-str*` *binds* that var.
-2. **`intern-macros` works.** Called while the compiler environment is bound — it has to ride on the
-   eval function, since that environment exists nowhere else — it recognises the macro
-   (`ns-interns*` reports `isMacro() === true`, off the emitted `cljs$lang$macro` flag) and it does
-   populate the analyzer's macro map. Verified directly: `:macros absent → present(unless)`.
-3. **And expansion still does not happen.** With `:macros` populated and `:defs` already holding
-   `unless`, the very next form still compiles as a call.
-
-So the gap sits one step further in than `intern-macros`: the macroexpansion path is not consulting
-what `resolve-macro-var` exposes. The remaining work is in the analyzer, not in the harness. Until
-then the page **says so** — a `defmacro` produces an explicit note in the diagnostics pane rather
-than silently wrong output — and the driver no longer carries the interning machinery, since it
-demonstrably does not achieve expansion.
-
-Scittle gets all of this right, in the same example, in the same page.
 
 ## 7. Recommendation for LiveCodes
 

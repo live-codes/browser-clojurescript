@@ -155,6 +155,15 @@ function definesMacro(core, form) {
   }
 }
 
+/** The name a munged JavaScript property stands for, when the build can tell us. */
+function demungeName(core, key) {
+  try {
+    return core.demunge(key);
+  } catch {
+    return key;
+  }
+}
+
 /** Navigates `a.b.c` to the global object a namespace compiles into, creating it. */
 function namespaceObject(path) {
   let target = globalThis;
@@ -207,7 +216,6 @@ function namespaceObject(path) {
     // `cljs.user.unless = …` throws "Cannot set properties of undefined" and the eval
     // fails silently — the same trap as a top-level `def` at run time.
     const source = namespaceObject(nsName);
-    const macroNs = namespaceObject('cljs.core$macros');
 
     const stream = readerTypes.indexing_push_back_reader(code);
     const eof = {};
@@ -233,13 +241,32 @@ function namespaceObject(path) {
     }
     if (!found) return code;
 
+    // Expose the macros through a per-namespace macros object and point the analyzer's
+    // `:use-macros` at it. `get-expander*` resolves an unqualified symbol from there
+    // *before* falling back to `cljs.core$macros`, so this leaves core macros alone: a
+    // user `(defmacro when …)` no longer replaces `cljs.core/when`, and because the
+    // registration lives in the per-compile state it also cannot leak into later runs.
+    const macrosNsName = `${nsName}$macros`;
+    const macrosNs = namespaceObject(macrosNsName);
+    for (const key of Object.keys(macrosNs)) delete macrosNs[key];
+
     let copied = 0;
     for (const key of Object.keys(source)) {
       const value = source[key];
-      if (value && value.cljs$lang$macro === true) {
-        macroNs[key] = value;
-        copied++;
-      }
+      if (!value || value.cljs$lang$macro !== true) continue;
+      macrosNs[key] = value;
+      copied++;
+      core.swap_BANG_(
+        state,
+        core.assoc_in,
+        core.vector(
+          core.keyword('cljs.analyzer', 'namespaces'),
+          core.symbol(null, nsName),
+          keyword('use-macros'),
+          core.symbol(null, demungeName(core, key)),
+        ),
+        core.symbol(null, macrosNsName),
+      );
     }
     if (!copied) {
       notes.push('macro pre-pass: no macro functions were produced, so nothing to expose');

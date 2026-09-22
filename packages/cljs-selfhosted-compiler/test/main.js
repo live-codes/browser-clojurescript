@@ -27,6 +27,22 @@ const CASES = [
     absent: ['SHOULD NOT PRINT'],
   },
   {
+    name: 'the same macro again, in the same worker',
+    // The regression guard: this failed while the first run passed, because a macro
+    // already exposed poisons the lookup when its `defmacro` is evaluated again.
+    code: '(defmacro unless [test & body]\n  `(when (not ~test) ~@body))\n(unless false (println "second run ran"))\n(unless true (println "SHOULD NOT PRINT"))',
+    expect: ['second run ran'],
+    absent: ['SHOULD NOT PRINT'],
+  },
+  {
+    name: 'a macro named after a core macro leaves core macros alone',
+    // Exposing user macros used to write into cljs.core$macros, replacing the core macro
+    // of the same name. `when-let` expands through core macros, so it is the canary.
+    code: '(defmacro when [test & body] :user-defined)\n(println (when-let [x 1] (inc x)))\n(println (->> [1 2] (map inc)))',
+    expect: ['2', '(2 3)'],
+    absent: [':user-defined'],
+  },
+  {
     name: 'println and a top-level def',
     code: '(println "hello from compiled js")\n(def x 41)\n(println "x + 1 =" (inc x))',
     expect: ['hello from compiled js', 'x + 1 = 42'],
