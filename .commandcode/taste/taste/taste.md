@@ -14,3 +14,4 @@
 - Wants the agent to carry work through to implementation and verification rather than pausing at a plan or diagnosis — after a proven approach, the expectation is to make the code change and report results, not to hand back next steps. Confidence: 0.75
 - Expects the agent to keep iterating autonomously until the feature actually works, not to stop and report partial status or hand back a diagnosis/"next experiment" — explicitly says to continue and not stop until it's working. Confidence: 0.7
 - Won't accept a known bug documented as a "known limitation"; when a limitation is fixable, wants the real/principled fix, not a workaround or a note in the docs. Confidence: 0.5
+- Treats shipping as a checkpoint requiring an explicit go/no-go review: before releasing, asks whether something is ready as-is or what must be added/fixed first, expecting hard blockers to be separated from nice-to-haves (including anything only typechecked but never executed). Confidence: 0.5

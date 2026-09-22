@@ -293,7 +293,11 @@ function namespaceObject(path) {
       fnInvokeDirect: false,
       optimizeConstants: false,
       checkedArrays: false,
-      sourceMap: false,
+      // On by default. The map is inline and carries `sourcesContent`, so a thrown error
+      // points at the ClojureScript the user wrote with nothing further from the host
+      // page. It roughly quadruples the emitted bytes for a small snippet, which is
+      // nothing next to cljs.core.
+      sourceMap: true,
       defEmitsVar: false,
       ...options,
     };

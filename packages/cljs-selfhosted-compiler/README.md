@@ -63,6 +63,10 @@ are needed, because the compiler analyses the source while the page needs the co
 `ns` (default `cljs.user`), `context`, `staticFns`, `fnInvokeDirect`, `optimizeConstants`,
 `checkedArrays`, `sourceMap`, `defEmitsVar`.
 
+`sourceMap` is **on by default**. The map is inline (a `sourceMappingURL` data comment) and carries
+`sourcesContent`, so the browser maps a thrown error back to the ClojureScript as written without
+anything further from the host page. Pass `sourceMap: false` to leave it out.
+
 ## Building
 
 ```bash
@@ -97,7 +101,6 @@ exist, without which compilation fails with `No *eval-fn* set`.
 
 - **A `defmacro` is evaluated at compile time**, so it runs in the worker. That is inherent to macros
   — it is what the JVM compiler does — but it does mean a macro body cannot touch the page.
-- **No source maps**, so no clickable line numbers for diagnostics.
 - **Not a project build**: no `:advanced`, no `:npm-deps`, no foreign libraries.
 
 ## Licence
