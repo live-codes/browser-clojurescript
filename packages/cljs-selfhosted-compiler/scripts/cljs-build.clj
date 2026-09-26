@@ -98,10 +98,12 @@
    {:lib 'clojure.datafy        :files ["clojure/datafy.clj" "clojure/datafy.cljs"]}
    ;; cljs.math is the ClojureScript wrapper over the JS Math object; no deps.
    {:lib 'cljs.math             :files ["cljs/math.cljs"]}
-   ;; cljs.proxy is what `cljs.core/proxy` and `this-as` emit calls into, so
-   ;; without it a `proxy` compiles and then throws in the page. Its impl half is
-   ;; pulled into the page runtime transitively through the require, but its
-   ;; source has to be servable for the analyzer to resolve that require.
+   ;; cljs.proxy provides the `cljs.proxy/proxy` function, and `this-as` emits
+   ;; calls into it. It is NOT `cljs.core/proxy`: r1.12.145's cljs.core excludes
+   ;; `proxy`/`proxy-super` and never redefines them, so `(proxy ...)` is an
+   ;; undeclared Var and never compiles. Its impl half is pulled into the page
+   ;; runtime transitively through the require, but its source has to be servable
+   ;; for the analyzer to resolve that require.
    {:lib 'cljs.proxy            :files ["cljs/proxy.cljs" "cljs/proxy/impl.cljs"]}
    ;; cljs.stacktrace parses and source-maps a stack trace; it needs goog.string
    ;; and clojure.string, both already in the runtime. It ships as .cljc only.

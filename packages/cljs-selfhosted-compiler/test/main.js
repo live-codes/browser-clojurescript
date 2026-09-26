@@ -254,9 +254,10 @@ const CASES = [
     expect: ['4', '2', '3'],
   },
   {
-    // cljs.proxy is what cljs.core/proxy used to be built on: `proxy/proxy` wraps
-    // a map in a real JS Proxy. Its impl half must be in the page too, which is
-    // what the `aget` on the proxied map checks.
+    // cljs.proxy's `proxy` function wraps a map in a real JS Proxy and backs
+    // `this-as`. It is not cljs.core/proxy: r1.12.145's cljs.core excludes
+    // proxy/proxy-super, so `(proxy ...)` never compiles. Its impl half must be in
+    // the page too, which is what the `aget` on the proxied map checks.
     name: 'require cljs.proxy',
     code: "(require '[cljs.proxy :as pr])\n(def m (pr/proxy {:a 1 :b 2}))\n(println (aget m \"a\"))",
     expect: ['1'],

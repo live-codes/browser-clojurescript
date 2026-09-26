@@ -69,7 +69,7 @@ by hand (they are in a different repository and cannot import it), and are meant
 | `clojure.core.protocols` | Clojure's `Datafiable`/`Navigable`/`IKVReduce` protocols, ported in the jar |
 | `cljs.pprint` | ClojureScript's pretty-printer |
 | `cljs.math` | ClojureScript's wrapper over the JavaScript `Math` object |
-| `cljs.proxy` | ClojureScript's JavaScript `Proxy` helper (what `cljs.core/proxy` used to be built on) |
+| `cljs.proxy` | ClojureScript's JavaScript `Proxy` helper: the `cljs.proxy/proxy` function, which `this-as` emits calls into. It is **not** `cljs.core/proxy` — r1.12.145's `cljs.core` excludes `proxy`/`proxy-super` and never redefines them, so `(proxy …)` is an undeclared Var and never compiles |
 | `cljs.stacktrace` | ClojureScript's stack-trace parser and source-mapper |
 | `cljs.reader` | ClojureScript's `read-string` reader — already in the page runtime |
 | `cljs.tools.reader` | the reader the analyzer itself uses — already in the page runtime |
