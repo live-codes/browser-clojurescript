@@ -292,13 +292,33 @@ const CASES = [
     code: "(require '[clojure.pprint :as pp])\n(println (some? pp/pprint))",
   },
   {
-    // cljs.test is not supported and is not claimed to be. This pins the exact
-    // blocker: its runtime half requires-macros clojure.template and itself, and
-    // expanding cljs.test$macros/cljs-output-dir calls cljs.analyzer.api/get-options
-    // against a compiler env that does not exist in the macro-eval context.
-    name: 'requiring cljs.test fails on its macros half (cljs-output-dir)',
-    expectError: true,
-    code: "(require '[cljs.test :as t])\n(println (some? t/is))",
+    // cljs.test in the shape a user writes it. Both halves are in
+    // `bundled-libraries`: the macros half is cljs/test.cljc — read as
+    // ClojureScript, so its ns form takes the `:cljs` branch, which
+    // requires-macros clojure.template and itself and requires the compiler's own
+    // cljs.env / cljs.analyzer / cljs.analyzer.api — and the runtime half is
+    // cljs/test.cljs. The `.cljc` half is what makes `deftest`/`is`/`testing`
+    // macros rather than calls, and `run-tests` is a macro too, so this asserts
+    // the report a real test run prints.
+    name: 'cljs.test: deftest, is, testing and run-tests',
+    code: "(require '[cljs.test :refer [deftest is testing run-tests]])\n(deftest addition\n  (testing \"arithmetic\"\n    (is (= 4 (+ 2 2)))\n    (is (= 7 (+ 3 4)))))\n(run-tests)",
+    expect: ['Ran 1 tests containing 2 assertions', '0 failures, 0 errors'],
+  },
+  {
+    // The declared-namespace shape, plus the two things that need more than the
+    // `is` macro: `are`, whose expansion is `clojure.template/do-template` — a
+    // macro from a namespace cljs.test only requires-macros, so it exercises the
+    // served-only `clojure/template.clj` entry — and a failing assertion's report,
+    // which has to come out of the runtime half in the page.
+    name: 'cljs.test in a declared namespace: are, thrown? and a reported failure',
+    code: "(ns starter.tests\n  (:require [cljs.test :refer [deftest is testing are run-tests]]))\n(deftest sums\n  (testing \"assertions from one template\"\n    (are [x y] (= x y)\n      2 (+ 1 1)\n      4 (* 2 2))))\n(deftest throws\n  (is (thrown? js/Error (throw (js/Error. \"boom\")))))\n(deftest failure\n  (is (= 1 2) \"one is not two\"))\n(run-tests 'starter.tests)",
+    expect: [
+      'Testing starter.tests',
+      'Ran 3 tests containing 4 assertions',
+      '1 failures, 0 errors',
+      'FAIL in (failure)',
+      'one is not two',
+    ],
   },
   {
     // Pins down the LOADED_ALREADY finding: the load-fn reports cljs.reader as

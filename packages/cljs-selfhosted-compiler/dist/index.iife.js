@@ -34,7 +34,7 @@ var CljsSelfHosted = (function () {
  * re-analysing them collides with themselves ("Can't redefine a constant").
  *
  * "Present in the compiler" is not the same as "present in the page runtime", and
- * this list is only correct for the namespaces that are both. It splits in two:
+ * this list is only correct for the namespaces that are both. It splits in three:
  *
  *   - cljs.core, cljs.reader and cljs.tools.reader (with its edn/reader-types/impl
  *     children) are in the page runtime — reader and tools.reader pulled in
@@ -47,6 +47,15 @@ var CljsSelfHosted = (function () {
  *     the page on an undefined global — the silent-failure shape (compile
  *     succeeds, page throws `Cannot read properties of undefined`), which is why
  *     they are named here rather than left implicit.
+ *   - cljs.analyzer.api rides the `cljs/analyzer` prefix above but is really a
+ *     third case, and it is worth knowing why. It is not a dependency of cljs.js,
+ *     so nothing pulls it into the worker bundle, and matching the prefix means
+ *     the load-fn never serves it either. Nothing in the compiler itself notices;
+ *     what notices is an *evaluated macro* that resolves a var there. cljs.test's
+ *     macros half does exactly that — its `cljs-output-dir` macro calls
+ *     cljs.analyzer.api/get-options — and compiled a call against a global that
+ *     did not exist. The `selfhost.compiler` build entry requires it now, which is
+ *     what makes this entry true rather than wishful.
  *
  * cljs.spec is deliberately absent from this list. It is in the compiler bundle
  * but cannot be added to the page runtime — cljs.spec.alpha requires cljs.analyzer

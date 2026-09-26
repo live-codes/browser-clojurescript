@@ -71,6 +71,7 @@ by hand (they are in a different repository and cannot import it), and are meant
 | `cljs.math` | ClojureScript's wrapper over the JavaScript `Math` object |
 | `cljs.proxy` | ClojureScript's JavaScript `Proxy` helper: the `cljs.proxy/proxy` function, which `this-as` emits calls into. It is **not** `cljs.core/proxy` — r1.12.145's `cljs.core` excludes `proxy`/`proxy-super` and never redefines them, so `(proxy …)` is an undeclared Var and never compiles |
 | `cljs.stacktrace` | ClojureScript's stack-trace parser and source-mapper |
+| `cljs.test` | ClojureScript's unit-testing framework — `deftest`, `is`, `testing`, `are`, `run-tests`. See below |
 | `cljs.reader` | ClojureScript's `read-string` reader — already in the page runtime |
 | `cljs.tools.reader` | the reader the analyzer itself uses — already in the page runtime |
 | `cljs.tools.reader.edn` | the EDN half of that reader — already in the page runtime |
@@ -79,6 +80,30 @@ The three reader namespaces (and `cljs.tools.reader.reader-types` and the
 `cljs.tools.reader.impl.*` namespaces under it) are already present in the page runtime because
 `clojure.edn` pulls them in transitively, so they cost nothing extra; they are listed here because
 they are require-able and work.
+
+`cljs.test` is the one library here whose macros half is not a plain Clojure file: it ships as
+`cljs/test.cljc` (the macros) plus `cljs/test.cljs` (the runtime), and read as ClojureScript the
+`.cljc` half takes its `:cljs` branch — so it requires-macros `clojure.template` and itself, and
+requires the compiler's own `cljs.env`, `cljs.analyzer` and `cljs.analyzer.api`. The first two are in
+the worker bundle already; `cljs.analyzer.api` is the reason it was previously thought impossible,
+and is required by the build entry to put it there (see below). `clojure.template` is Clojure source
+the worker evaluates, so it is a served-only entry rather than a compiled one.
+
+```clojure
+(require '[cljs.test :refer [deftest is testing run-tests]])
+
+(deftest addition
+  (testing "arithmetic"
+    (is (= 4 (+ 2 2)))))
+
+(run-tests)
+```
+
+`deftest`, `is`, `testing`, `are`, `run-tests`, `run-all-tests`, `async` and `use-fixtures` are all
+macros, and they expand in the worker like any other macro, so a test file compiles to page
+JavaScript that calls into `cljs.test`'s runtime. The two limitations that follow from that are the
+same ones the [Limitations](#limitations) section describes for user macros: a `deftest` body cannot
+reach into the page at compile time, and macro expansion happens once per compile.
 
 Requiring anything else fails with a normal "No such namespace" diagnostic.
 
@@ -99,13 +124,6 @@ page — a macros namespace's `.clj` half, or a transitive dependency.
 
 ### What is not included, and why
 
-- **`cljs.test`** would be useful, but it cannot work against this compiler. Its runtime half
-  (`cljs/test.cljs`) requires-macros `clojure.template` and itself, and expanding
-  `cljs.test$macros/cljs-output-dir` calls `cljs.analyzer.api/get-options`, which reads the
-  compiler's own options out of a compiler environment that the macro-eval context does not have.
-  Macroexpansion then dies with `Cannot read properties of undefined (reading 'get_options')`,
-  surfaced as `Could not analyze  in file cljs/test.cljs`. Making it work would mean exposing the
-  analyzer and `cljs.env` to evaluated Clojure — i.e. dragging the compiler into the page.
 - **`cljs.spec.alpha`** (and `cljs.spec.gen.alpha`, `cljs.spec.test.alpha`, `cljs.core.specs.alpha`)
   are in the compiler bundle but cannot be added to the page. `cljs.spec.alpha` requires
   `cljs.analyzer` and `cljs.env`, and its macros half asks the load-fn for `cljs.core`'s own macros
@@ -135,6 +153,18 @@ bundle (`LOADED_ALREADY` in `src/index.js`). Some of those namespaces (`cljs.cor
 **not** in the page. Requiring one of the latter compiles and then throws in the page on an
 undefined global — the same silent-failure shape the two-halves rule exists to prevent — so they are
 not part of the supported set.
+
+One of them, `cljs.analyzer.api`, is a third case, and it is the reason `cljs.test` used to be
+impossible. It is not a dependency of `cljs.js`, so nothing drags it into the worker bundle, and yet
+its path matches the `cljs/analyzer` prefix in `LOADED_ALREADY` and so is never served either. Any
+namespace whose *macros* resolve a var there — `cljs.test`'s macros half calls
+`cljs.analyzer.api/get-options` from `cljs-output-dir` — therefore compiled a call to
+`cljs.analyzer.api.get_options` against a global that did not exist, and died with `Cannot read
+properties of undefined (reading 'get_options')`, which cljs.js surfaces only as the generic
+`Could not analyze  in file cljs/test.cljs` (the real cause is the exception's `cause`, which
+`info.errors` does not print). The `selfhost.compiler` build entry requires `cljs.analyzer.api`, the
+same way it exists at all to make `cljs.core$macros` be emitted, and that is what makes the
+`LOADED_ALREADY` entry true rather than wishful.
 
 
 ## Options

@@ -108,12 +108,17 @@
    ;; cljs.stacktrace parses and source-maps a stack trace; it needs goog.string
    ;; and clojure.string, both already in the runtime. It ships as .cljc only.
    {:lib 'cljs.stacktrace       :files ["cljs/stacktrace.cljc"]}
-   ;; cljs.test is deliberately NOT here. Its runtime is servable — cljs/test.cljs
-   ;; and its macros half cljs/test.cljc are both in the jar, and its macros
-   ;; require clojure.template — but the analyzer then fails on it
-   ;; ("Could not analyze  in file cljs/test.cljs"), because its macros namespace
-   ;; requires the compiler's own cljs.analyzer/cljs.env, which the load-fn will
-   ;; not serve as Clojure. It was tried and left out; see the README.
+   ;; cljs.test is the unit-testing framework. Both halves are listed because it
+   ;; is a `.cljc` macros half plus a `.cljs` runtime half: cljs/test.cljc read as
+   ;; ClojureScript takes the `:cljs` branch of its ns form, which requires-macros
+   ;; clojure.template and itself and requires the compiler's own cljs.env /
+   ;; cljs.analyzer / cljs.analyzer.api.
+   {:lib 'cljs.test            :files ["cljs/test.cljc" "cljs/test.cljs"]}
+   ;; clojure.template is the `do-template` macro that `cljs.test/are` expands
+   ;; through. It is Clojure source the worker evaluates, like cljs.reader's macros
+   ;; half, so it is served and not compiled into the page. `clojure.walk`, which it
+   ;; requires, is already above.
+   {:files ["clojure/template.clj"]}
 
    ;; Served-only. cljs.reader and cljs.tools.reader are part of the compiler
    ;; bundle (`LOADED_ALREADY` in src/index.js), so their `.cljs` halves are never

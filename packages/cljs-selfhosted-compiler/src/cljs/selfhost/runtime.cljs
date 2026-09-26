@@ -20,4 +20,5 @@
             [clojure.datafy]
             [cljs.math]
             [cljs.proxy]
-            [cljs.stacktrace]))
+            [cljs.stacktrace]
+            [cljs.test]))

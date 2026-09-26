@@ -1,6 +1,6 @@
 {
   "name": "@live-codes/cljs-selfhosted-compiler",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The self-hosted ClojureScript compiler, packaged for LiveCodes: compile ClojureScript in a classic web worker and run the resulting JavaScript in the page.",
   "type": "module",
   "main": "./dist/index.iife.js",
