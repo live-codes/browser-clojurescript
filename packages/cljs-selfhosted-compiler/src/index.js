@@ -26,14 +26,37 @@
  */
 
 /**
- * Namespaces already present in the compiler artifact, so there is nothing to
+ * Namespaces already present in the *compiler* artifact, so there is nothing to
  * analyse and nothing to fetch: the Closure library, cljs.core (whose analysis
  * `:dump-core` puts into the state), and the compiler's own internals —
  * cljs.tools.reader, cljs.analyzer and friends are part of the bundle, and
  * re-analysing them collides with themselves ("Can't redefine a constant").
+ *
+ * "Present in the compiler" is not the same as "present in the page runtime", and
+ * this list is only correct for the namespaces that are both. It splits in two:
+ *
+ *   - cljs.core, cljs.reader and cljs.tools.reader (with its edn/reader-types/impl
+ *     children) are in the page runtime — reader and tools.reader pulled in
+ *     transitively by clojure.edn — so a user `(require '[cljs.reader])` (which
+ *     this reports as loaded) resolves at run time and works.
+ *   - cljs.analyzer, cljs.compiler, cljs.env, cljs.js, cljs.source_map and
+ *     cljs.tagged_literals are the compiler itself. They are reported as loaded
+ *     only so it does not re-analyse its own bundle, and they are NOT in the page
+ *     runtime. Requiring one of those from user code compiles and then fails in
+ *     the page on an undefined global — the silent-failure shape (compile
+ *     succeeds, page throws `Cannot read properties of undefined`), which is why
+ *     they are named here rather than left implicit.
+ *
+ * cljs.spec is deliberately absent from this list. It is in the compiler bundle
+ * but cannot be added to the page runtime — cljs.spec.alpha requires cljs.analyzer
+ * and cljs.env, and its macros half asks for cljs.core's own macros namespace
+ * (cljs.core$macros) which the load-fn cannot serve. Claiming it was loaded turned
+ * `(require '[cljs.spec.alpha])` into a compile that succeeded followed by
+ * `Cannot read properties of undefined (reading 'alpha')` in the page; not claiming
+ * it makes the require fail cleanly instead.
  */
 const LOADED_ALREADY =
-  /^cljs\/(core|analyzer|compiler|env|js|reader|source_map|spec|tagged_literals|tools\/reader)/;
+  /^cljs\/(core|analyzer|compiler|env|js|reader|source_map|tagged_literals|tools\/reader)/;
 
 const isLoadedAlready = (path) => path.startsWith('goog/') || LOADED_ALREADY.test(path);
 

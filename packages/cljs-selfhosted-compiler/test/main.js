@@ -212,6 +212,113 @@ const CASES = [
     expect: [':a 1'],
   },
   {
+    // clojure.core.reducers was already *served* — its source was in lib-files —
+    // but not compiled into the page runtime, so the require resolved and the
+    // generated call then threw on an undefined `clojure.core.reducers`. It is a
+    // reducer (a reified cljs.core/IReduce) as well as fold, so this checks both
+    // the runtime object and the protocol it implements.
+    name: 'require clojure.core.reducers',
+    code: "(require '[clojure.core.reducers :as r])\n(println (r/reduce + 0 (r/map inc [1 2 3 4])))\n(println (r/fold + [1 2 3 4]))",
+    expect: ['14', '10'],
+  },
+  {
+    // Same half-install bug as clojure.core.reducers: served, but not in the page.
+    name: 'require clojure.core.protocols',
+    code: "(require '[clojure.core.protocols :as p])\n(println (p/nav {:a 1} :a 2))\n(println (p/datafy 41))",
+    expect: ['2', '41'],
+  },
+  {
+    name: 'require clojure.data',
+    // diff returns [in-a-only in-b-only in-both], printed as one seq.
+    code: "(require '[clojure.data :as data])\n(println (data/diff {:a 1 :b 2} {:a 1 :c 3}))",
+    expect: ['{:b 2}', '{:c 3}', '{:a 1}'],
+  },
+  {
+    name: 'require clojure.zip',
+    code: "(require '[clojure.zip :as z])\n(def zloc (z/vector-zip [10 [20 30]]))\n(println (z/node (z/next zloc)))\n(println (z/root (z/edit (z/next zloc) inc)))",
+    expect: ['10', '[11 [20 30]]'],
+  },
+  {
+    // datafy is a second port that leans on clojure.core.protocols (above): it
+    // needs that protocol to be in the page, and the Datafiable protocol it
+    // implements is what `datafy`/`nav` dispatch on.
+    name: 'require clojure.datafy',
+    code: "(require '[clojure.datafy :as df])\n(println (df/datafy [1 2 3]))\n(println (df/nav {:a 1} :a 2))",
+    expect: ['[1 2 3]', '2'],
+  },
+  {
+    // cljs.math is the ClojureScript wrapper over the JS Math object and needs
+    // nothing else, so a failure here would mean the runtime half was missing.
+    name: 'require cljs.math',
+    code: "(require '[cljs.math :as m])\n(println (m/sqrt 16))\n(println (m/floor 2.9))\n(println (m/ceil 2.1))",
+    expect: ['4', '2', '3'],
+  },
+  {
+    // cljs.proxy is what cljs.core/proxy used to be built on: `proxy/proxy` wraps
+    // a map in a real JS Proxy. Its impl half must be in the page too, which is
+    // what the `aget` on the proxied map checks.
+    name: 'require cljs.proxy',
+    code: "(require '[cljs.proxy :as pr])\n(def m (pr/proxy {:a 1 :b 2}))\n(println (aget m \"a\"))",
+    expect: ['1'],
+  },
+  {
+    // cljs.stacktrace ships as a .cljc only and needs goog.string, which is in
+    // the page runtime transitively.
+    name: 'require cljs.stacktrace',
+    code: "(require '[cljs.stacktrace :as st])\n(println (st/parse-file-line-column \"foo.cljs:10:20\"))",
+    expect: ['[foo.cljs 10 20]'],
+  },
+  {
+    // Bucket 4: cljs.reader's sibling — the reader the analyzer itself uses is
+    // reported loaded (LOADED_ALREADY) and the page runtime has it, so a user may
+    // require it, even though it was never documented.
+    name: 'require cljs.tools.reader',
+    code: "(require '[cljs.tools.reader :as tr])\n(println (tr/read-string \"[1 2 3]\"))",
+    expect: ['[1 2 3]'],
+  },
+  {
+    name: 'require cljs.tools.reader.edn',
+    code: "(require '[cljs.tools.reader.edn :as edn])\n(println (edn/read-string \"{:a 1 :b [2 3]}\"))",
+    expect: [':a 1', ':b [2 3]'],
+  },
+  {
+    // clojure.pprint is a trap, not a supported library: it *resolves* (the
+    // load-fn's clojure/ -> cljs/ fallback serves cljs/pprint.cljs) but compiles
+    // calls to `clojure.pprint.*`, which no page global provides. Recorded, not
+    // asserted: the compile succeeds and the page throws. Use cljs.pprint.
+    name: 'clojure.pprint resolves but throws in the page',
+    note: true,
+    code: "(require '[clojure.pprint :as pp])\n(println (some? pp/pprint))",
+  },
+  {
+    // cljs.test is not supported and is not claimed to be. This pins the exact
+    // blocker: its runtime half requires-macros clojure.template and itself, and
+    // expanding cljs.test$macros/cljs-output-dir calls cljs.analyzer.api/get-options
+    // against a compiler env that does not exist in the macro-eval context.
+    name: 'requiring cljs.test fails on its macros half (cljs-output-dir)',
+    expectError: true,
+    code: "(require '[cljs.test :as t])\n(println (some? t/is))",
+  },
+  {
+    // Pins down the LOADED_ALREADY finding: the load-fn reports cljs.reader as
+    // loaded, and that is right — the page runtime has it, pulled in transitively
+    // by clojure.edn (clojure.edn -> cljs.reader -> cljs.tools.reader.edn).
+    name: 'require cljs.reader (reported loaded, and the page has it)',
+    code: "(require '[cljs.reader :as reader])\n(println (reader/read-string \"[1 2 3]\"))",
+    expect: ['[1 2 3]'],
+  },
+  {
+    // The other half of that finding: cljs.spec.alpha is in the *compiler* bundle,
+    // so the load-fn used to report it as loaded. The compile succeeded and the
+    // page then threw `Cannot read properties of undefined (reading 'alpha')`. It
+    // is not in the page runtime and cannot be — cljs.spec.alpha requires
+    // cljs.analyzer and cljs.env — so the load-fn no longer claims it, and the
+    // require now fails cleanly with "No such namespace" instead.
+    name: 'requiring cljs.spec.alpha fails cleanly rather than in the page',
+    code: "(require '[cljs.spec.alpha :as s])\n(println (s/valid? int? 1))",
+    expectError: true,
+  },
+  {
     name: 'an unsupported require fails rather than hangs',
     code: "(require '[some.library.that.does.not.exist :as nope])\n(println :never)",
     expectError: true,

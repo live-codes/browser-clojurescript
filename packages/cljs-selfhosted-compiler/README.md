@@ -48,13 +48,94 @@ window.cljs.user = window.cljs.user || {};
 
 ## Bundled libraries
 
-`cljs.core`, `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn` and `cljs.pprint` — in
-both artifacts, so they can be required and will resolve at runtime.
+`cljs.core` **is the standard library** — the language itself. Everything else in this list is a
+namespace that ships in the same `cljs.jar` and is offered alongside it. All of them are in both
+artifacts, so they can be required and will resolve at runtime.
 
-Requiring anything else fails with a normal "No such namespace" diagnostic. Adding a library means
-adding its sources (and its macros namespace's source) to the `lib-files` list in
-`scripts/cljs-build.clj`, and to the runtime entry in `src/cljs/selfhost/runtime.cljs`; both halves
-are needed, because the compiler analyses the source while the page needs the compiled JavaScript.
+This list is the authoritative one. LiveCodes' documentation and its in-app language info repeat it
+by hand (they are in a different repository and cannot import it), and are meant to say exactly this.
+
+| namespace | what it is |
+| --- | --- |
+| `cljs.core` | the ClojureScript standard library (nothing to serve: its analysis is what `empty-state` dumps and its JavaScript *is* the page runtime) |
+| `clojure.string` | Clojure's string library, ported in the jar |
+| `clojure.set` | Clojure's set library, ported in the jar |
+| `clojure.walk` | Clojure's tree walker, ported in the jar |
+| `clojure.edn` | Clojure's EDN reader, ported in the jar |
+| `clojure.data` | Clojure's `diff`/`equality-partition`, ported in the jar (a thin wrapper over `clojure.set`) |
+| `clojure.zip` | Clojure's zipper library, ported in the jar |
+| `clojure.datafy` | Clojure's `datafy`/`nav`, ported in the jar (over `clojure.core.protocols`) |
+| `clojure.core.reducers` | Clojure's reducers/fold, ported in the jar |
+| `clojure.core.protocols` | Clojure's `Datafiable`/`Navigable`/`IKVReduce` protocols, ported in the jar |
+| `cljs.pprint` | ClojureScript's pretty-printer |
+| `cljs.math` | ClojureScript's wrapper over the JavaScript `Math` object |
+| `cljs.proxy` | ClojureScript's JavaScript `Proxy` helper (what `cljs.core/proxy` used to be built on) |
+| `cljs.stacktrace` | ClojureScript's stack-trace parser and source-mapper |
+| `cljs.reader` | ClojureScript's `read-string` reader — already in the page runtime |
+| `cljs.tools.reader` | the reader the analyzer itself uses — already in the page runtime |
+| `cljs.tools.reader.edn` | the EDN half of that reader — already in the page runtime |
+
+The three reader namespaces (and `cljs.tools.reader.reader-types` and the
+`cljs.tools.reader.impl.*` namespaces under it) are already present in the page runtime because
+`clojure.edn` pulls them in transitively, so they cost nothing extra; they are listed here because
+they are require-able and work.
+
+Requiring anything else fails with a normal "No such namespace" diagnostic.
+
+Both halves are needed — the compiler analyses the source while the page needs the compiled
+JavaScript — and shipping only one leaves a library half-installed: without its source the require
+fails with "No such namespace", and without its compiled JavaScript the require *succeeds* and the
+generated call then throws in the page on an undefined global. The set is therefore declared once,
+as `bundled-libraries` in `scripts/cljs-build.clj`, and the runtime entry namespace
+(`src/cljs/selfhost/runtime.cljs`) is **generated from that same list** by the build, so the two
+halves cannot drift. Adding a library is one entry:
+
+```clojure
+{:lib 'clojure.zip :files ["clojure/zip.clj" "clojure/zip.cljs"]}
+```
+
+A `{:files [...]}` entry with no `:lib` is served to the compiler without being compiled into the
+page — a macros namespace's `.clj` half, or a transitive dependency.
+
+### What is not included, and why
+
+- **`cljs.test`** would be useful, but it cannot work against this compiler. Its runtime half
+  (`cljs/test.cljs`) requires-macros `clojure.template` and itself, and expanding
+  `cljs.test$macros/cljs-output-dir` calls `cljs.analyzer.api/get-options`, which reads the
+  compiler's own options out of a compiler environment that the macro-eval context does not have.
+  Macroexpansion then dies with `Cannot read properties of undefined (reading 'get_options')`,
+  surfaced as `Could not analyze  in file cljs/test.cljs`. Making it work would mean exposing the
+  analyzer and `cljs.env` to evaluated Clojure — i.e. dragging the compiler into the page.
+- **`cljs.spec.alpha`** (and `cljs.spec.gen.alpha`, `cljs.spec.test.alpha`, `cljs.core.specs.alpha`)
+  are in the compiler bundle but cannot be added to the page. `cljs.spec.alpha` requires
+  `cljs.analyzer` and `cljs.env`, and its macros half asks the load-fn for `cljs.core`'s own macros
+  namespace (`cljs.core$macros`), which is not a file the jar can be served by name. Its first step
+  fails with `No such macros namespace: cljs.core`, and the next would be the analyzer. It is
+  therefore not claimed as loaded either — a `(require '[cljs.spec.alpha])` fails cleanly with
+  "No such namespace" rather than compiling and throwing in the page.
+- **`clojure.pprint`** is a trap, not a supported library. It *resolves* — the load-fn's
+  `clojure/` → `cljs/` fallback serves `cljs/pprint.cljs` — but the source declares `cljs.pprint`
+  while the require asked for `clojure.pprint`, so the emitted calls go to a `clojure.pprint` global
+  no page provides and the page throws `Cannot read properties of undefined (reading 'pprint')`.
+  The supported spelling is `cljs.pprint`.
+- **`cljs.core.async`, Reagent, `cljs-ajax`, date libraries and every other third-party library**
+  are separate dependencies. They are not in the jar, so they are not bundled. This package ships
+  the compiler and the namespaces the jar carries, and nothing else.
+- **npm imports are not supported.** `(:require ["react" :as React])` fails with `No such
+  namespace`: a browser tab has no classpath and the compiler has no JS dependency index to resolve
+  a package through. The [Cherry-based ClojureScript](https://livecodes.io/docs/languages/clojurescript-cherry)
+  in LiveCodes handles that case; use it for npm-dependent code.
+
+### One list, and the compiler's own namespaces
+
+The load-fn reports the compiler's internals as already loaded so it does not re-analyse its own
+bundle (`LOADED_ALREADY` in `src/index.js`). Some of those namespaces (`cljs.core`, `cljs.reader`,
+`cljs.tools.reader`) really are in the page runtime; the rest (`cljs.analyzer`, `cljs.compiler`,
+`cljs.env`, `cljs.js`, `cljs.source-map`, `cljs.tagged-literals`) are the compiler itself and are
+**not** in the page. Requiring one of the latter compiles and then throws in the page on an
+undefined global — the same silent-failure shape the two-halves rule exists to prevent — so they are
+not part of the supported set.
+
 
 ## Options
 

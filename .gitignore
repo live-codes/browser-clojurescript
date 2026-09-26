@@ -1,6 +1,7 @@
 node_modules/
 target/
 .cache/
+jar-extract/
 
 # Produced by `npm run build:cljs-selfhost`; several megabytes, so it is fetched
 # or built rather than committed.
